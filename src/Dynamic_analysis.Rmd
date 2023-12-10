@@ -1,0 +1,302 @@
+---
+title : "Dynamic Data Analysis"
+Author: "Hawnaz O. Najmalddin"
+date  : "29.11.2023" 
+output: html_notebook
+---
+
+
+
+# 01) Description: 
+this is a dynamic data analysis tool to analyse the iv-ip-ctl-cisplatin H&E tissues. 
+
+
+`input`
+the input folder must contain normalized measurements of different classed from QuPath, named properly, the name of the classes must be written at the end of the file name separated by "_". 
+
+`output`
+the output folder will contain rds and csv outputs. 
+
+plot: 
+this folder will show a dynamic plot of Average and SEM positive cell proportion in the ROIs in per class, shown ascending. 
+
+
+```{r LoadLibs, echo=FALSE, message=F, warning=F}
+myLibs <- c("dplyr", "data.table")
+lapply( myLibs, "require", character.only =T)
+
+# location of raw data: 
+
+dirIn <- file.path("outputs", "NormalizedOCLResults")
+
+```
+
+
+
+
+
+```{r}
+# 2) Load datasets dynamically
+
+# list all files: 
+files <- list.files(dirIn, full.names = TRUE)
+
+# function to extract numeric identifier from file name
+get_id <- function(file) {
+  # extract numeric identifier from the beginning of the file name
+  id <- as.numeric(gsub("[^0-9]", "", basename(file)))
+  return(id)
+}
+
+# iterate over the list of files and load data frames dynamically
+dfs <- lapply(files, function(file) {
+  # load data frame
+  df <- data.table::fread(input = file)
+  # get the numeric identifier from the file name
+  id <- get_id(file)
+  # assign a dynamic name to the data frame based on the identifier and file type
+  assign(paste0("df_", id, "_", tools::file_path_sans_ext(basename(file))), df, envir = .GlobalEnv)
+})
+
+# clean up unused variables
+rm(files)
+
+# Print the names of the loaded data frames
+print(ls(pattern = "^df_"))
+
+
+```
+
+
+
+```{r}
+gc(full = T)
+```
+
+# 02) Apply column remover: 
+
+```{r}
+# Load the dplyr package if not already loaded
+if (!requireNamespace("dplyr", quietly = TRUE)) {
+  install.packages("dplyr")
+}
+library(dplyr)
+
+# Define the updated colRemover function using dplyr
+# Define the updated colRemover function
+colRemover <- function(x) {
+  x <- x[, -c(1,2,4:8), drop = FALSE]   # this depends on the csv files; must be updated. 
+  return(x)
+}
+
+
+gc(full = TRUE)
+
+```
+
+```{r}
+rm(dfs); gc(full = T)
+
+```
+
+
+# 03) Remove unwanted columns by idx.
+
+```{r}
+# Loop through all data frames in the global environment
+for (df_name in ls(pattern = "^df_")) {
+  # Get the data frame using get() function
+  df <- get(df_name)
+  
+  # Remove columns by name using the function
+  df <- colRemover(df)
+  
+  # Assign the modified data frame back to the global environment
+  assign(df_name, df, envir = .GlobalEnv)
+}
+
+# Print a message indicating completion
+cat("Columns removed from all data frames.\n")
+```
+
+
+
+# 04) label encoding dataframes: 
+
+```{r}
+df_list <- ls(pattern = "df_")
+# 
+# 
+# # Use lapply to modify each dataframe in-place
+# lapply(df_list, function(df_name) {
+#   # Assign the dataframe to the variable
+#   df <- get(df_name)
+#   
+#   # Add a new column 'lbl' filled with NA values
+#   df$lbl <- NA
+#   
+#   # Update the dataframe in the Global environment
+#   assign(df_name, df, envir = .GlobalEnv)
+# })
+# 
+
+
+
+lapply(df_list, function(df_name) {
+  # Assign the dataframe to the variable
+  df <- get(df_name)
+  
+  # Add a new column 'lbl' filled with the corresponding dataframe name
+  df$lbl <- df_name
+  
+  # Update the dataframe in the Global environment
+  assign(df_name, df, envir = .GlobalEnv)
+})
+
+
+
+```
+
+
+```{r}
+rm(df_list, df_name, df)
+```
+
+
+
+```{r}
+# List all dataframes in the Global Environment
+all_dataframes <- ls(pattern = "^df_")
+
+# Create final_A by combining all dataframes
+final_A <- do.call(rbind, lapply(all_dataframes, get))
+
+# Remove all other dataframes
+rm(list = all_dataframes)
+gc(full = T)
+```
+
+
+```{r}
+# saveRDS(object = final_A, file = file.path("outputs/labeled_cbindDataSet.rds"))
+```
+
+
+
+
+# 05) Read Processed Dataset: 
+
+```{r}
+library(dplyr)
+df <- readRDS("outputs/labeled_cbindDataSet.rds")
+```
+
+```{r}
+df$lbl %>% as.factor() %>% levels()
+```
+
+
+
+
+
+```{r}
+# Convert "lbl" column to a factor
+df$lbl <- as.factor(df$lbl)
+
+# Create a contingency table
+contingency_table <- table(df$lbl, df$Name)
+
+# Print the contingency table
+print(contingency_table)
+
+```
+
+
+## read CSV: 
+
+```{r}
+
+df <- data.table::fread("outputs/FinalOutput.csv")
+df$Class <- as.factor(df$Class)
+df$Count <- as.numeric(df$Count)
+df$Rep <- as.factor(df$Rep)
+
+```
+
+
+
+
+
+```{r}
+library(data.table)
+
+# Assuming your data frame is named 'df'
+# Convert it to a data.table
+dt <- data.table(df)
+
+# Use dcast to reshape the data
+result <- dcast(dt, Name ~ Class, value.var = "Count")
+
+# Extract the 'Class' from the 'Name' column
+result[, Class := sub('.*_(.*?)$', '\\1', Name)]
+
+# Calculate the Percentage
+result[, Percentage := (Positive / (Positive + Negative)) * 100]
+
+# Print the updated result
+print(result)
+
+
+
+```
+
+
+```{r}
+library(dplyr)
+
+# Assuming 'result' is your current dataframe
+Export_df <- result %>%
+  group_by(Class) %>%
+  summarize(
+    Averages = mean(Percentage),
+    N = n(),
+    STDEV = sd(Percentage),
+    SEM = sd(Percentage) / sqrt(N)
+  )
+
+# Print the final dataframe
+print(Export_df)
+
+```
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(stats)  # Load 'stats' after 'ggplot2' to avoid conflicts
+library(plotly)
+
+# Arrange the data by Averages in ascending order
+Export_df <- Export_df[order(Export_df$Averages), ]
+
+# Create a column chart with whiskers using ggplot2
+plot <- ggplot(Export_df, aes(x = Class, y = Averages)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = Averages - SEM, ymax = Averages + SEM), width = 0.2) +
+  labs(title = "Column Chart with Whiskers",
+       x = "Class",
+       y = "Averages") +
+  theme_minimal()
+
+# Convert ggplot chart to plotly
+plotly_chart <- plotly::ggplotly(plot)  # Specify 'plotly::' to avoid conflicts
+
+# Display the interactive plot
+plotly_chart
+
+```
+
+
+
+
+
